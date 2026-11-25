@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CyberWatch Horizons</title>
+<style>
+:root{--bg:#07111f;--card:#0d1b2d;--line:#29405e;--txt:#eef6ff;--mut:#9db0c9;--blue:#55b8ff;--green:#5ee49b;--orange:#ffbd64;--red:#ff657a;--purple:#c79cff}
+*{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#06101d,#101827);color:var(--txt);font-family:Arial,Helvetica,sans-serif}
+header{position:sticky;top:0;z-index:4;background:#07111ff2;border-bottom:1px solid var(--line);padding:18px 22px}.wrap{max-width:1450px;margin:auto}h1{margin:0;font-size:25px}.sub{color:var(--mut);font-size:13px;margin-top:5px}
+nav{display:flex;gap:7px;flex-wrap:wrap;margin-top:12px}button{background:#13243a;color:var(--txt);border:1px solid #365373;border-radius:9px;padding:8px 11px;cursor:pointer}button:hover{border-color:var(--blue)}
+main{max-width:1450px;margin:auto;padding:18px}.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:13px}.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:15px}.s3{grid-column:span 3}.s4{grid-column:span 4}.s6{grid-column:span 6}.s12{grid-column:span 12}@media(max-width:950px){.s3,.s4,.s6{grid-column:span 12}}
+.lab{font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.08em}.big{font-size:29px;font-weight:800;margin-top:4px}.small{font-size:12px;color:var(--mut)}
+.pill{display:inline-block;border:1px solid #395674;border-radius:999px;padding:3px 7px;font-size:11px;margin:2px}.P1{color:var(--red)}.P2{color:var(--orange)}.H2{color:var(--green)}.H3{color:var(--purple)}.OK{color:var(--green)}.ALERTE{color:var(--red)}
+section{display:none}section.active{display:block}table{width:100%;border-collapse:collapse;font-size:12px}th,td{text-align:left;padding:9px;border-bottom:1px solid var(--line);vertical-align:top}th{color:#c1d0e4}a{color:#8ccaff}
+.controls{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}input,select{background:#081526;color:var(--txt);border:1px solid #355171;border-radius:8px;padding:8px}input{min-width:300px}.bar{height:8px;background:#15273e;border-radius:6px;overflow:hidden;margin-top:7px}.fill{height:100%;background:linear-gradient(90deg,#4ca8ff,#5ee49b)}.warn{color:var(--orange)}.err{color:var(--red)}
+.kpirow{display:grid;grid-template-columns:1.3fr .6fr .6fr .5fr;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);font-size:12px}.titleline{display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap}
+</style></head><body>
+<header><div class="wrap"><h1>CyberWatch Horizons</h1><div class="sub">Veille active et proactive mondiale — objectifs personnels + incidents IT internationaux + KPI/QMS + alertes email</div>
+<nav><button onclick="show('overview')">Vue générale</button><button onclick="show('feed')">Flux mondial</button><button onclick="show('horizons')">H1 / H2 / H3</button><button onclick="show('kpis')">KPI / QMS</button><button onclick="show('signals')">Signaux faibles</button><button onclick="show('sources')">Sources</button><button onclick="show('alerts')">Alertes</button></nav></div></header>
+<main>
+<section id="overview" class="active"><div class="grid">
+<div class="card s3"><div class="lab">Événements enregistrés</div><div class="big" id="nTotal">—</div></div>
+<div class="card s3"><div class="lab">P1 critiques</div><div class="big P1" id="nP1">—</div></div>
+<div class="card s3"><div class="lab">Sources actives</div><div class="big" id="nSources">—</div></div>
+<div class="card s3"><div class="lab">Dernière collecte</div><div class="big" style="font-size:16px" id="last">—</div></div>
+<div class="card s4"><div class="lab">H1</div><h3>Veille CVE et correctifs</h3><p>Quotidienne / continue : CVE, patches, zero-days, incidents exploitables, ransomware.</p><span class="pill">objectif personnel</span></div>
+<div class="card s4"><div class="lab">H2</div><h3>Évolution IAM et Zero Trust</h3><p>Hebdomadaire : IAM, MFA, SSO, OAuth/OIDC, Entra ID, passkeys, PAM, Zero Trust.</p><span class="pill H2">objectif personnel</span></div>
+<div class="card s4"><div class="lab">H3</div><h3>IA en cybersécurité</h3><p>Mensuelle : IA générative, LLM, agents, adversarial ML, sécurité des systèmes IA.</p><span class="pill H3">objectif personnel</span></div>
+<div class="card s12"><h3>Veille IT mondiale transversale</h3><p>Le moteur classe aussi les événements qui ne correspondent pas directement à tes trois thèmes : pannes cloud/SaaS, cyberattaques, supply chain, réseaux, DevOps, réglementation et nouvelles technologies.</p><div id="catSummary"></div></div>
+<div class="card s12"><div class="titleline"><div><h3>Dernières alertes</h3><div class="small">Date de publication, date de détection, source et lien d'origine sont conservés.</div></div></div><div style="overflow:auto"><table><thead><tr><th>Publié</th><th>Détecté</th><th>Priorité</th><th>Horizon</th><th>Catégorie</th><th>Événement</th><th>Source</th></tr></thead><tbody id="latestRows"></tbody></table></div></div>
+</div></section>
+
+<section id="feed"><div class="card"><h2>Flux mondial IT / cybersécurité</h2><div class="controls"><input id="q" placeholder="CVE, outage, Microsoft, IAM, IA..." oninput="renderFeed()"><select id="fh" onchange="renderFeed()"><option value="">Tous horizons</option><option>H1</option><option>H2</option><option>H3</option></select><select id="fp" onchange="renderFeed()"><option value="">Toutes priorités</option><option>P1</option><option>P2</option><option>P3</option><option>P4</option></select><select id="fc" onchange="renderFeed()"><option value="">Toutes catégories</option></select></div><div style="overflow:auto"><table><thead><tr><th>Publié</th><th>Détecté</th><th>Priorité</th><th>Horizon</th><th>Catégorie</th><th>Qualité</th><th>Recoup.</th><th>Événement</th><th>Source</th></tr></thead><tbody id="feedRows"></tbody></table></div></div></section>
+
+<section id="horizons"><div class="grid" id="horizonCards"></div></section>
+<section id="kpis"><div class="grid" id="kpiSections"></div></section>
+
+<section id="signals"><div class="grid">
+<div class="card s6"><h2>Signaux faibles H2</h2><div id="weakH2"></div></div>
+<div class="card s6"><h2>Signaux faibles H3</h2><div id="weakH3"></div></div>
+<div class="card s12"><h2>Scénarios H3</h2><p class="small">Le cours demande de transformer les signaux faibles en hypothèses, identifier les inconnues à lever, choisir une méthode de vérification puis mettre à jour les objectifs.</p><table><thead><tr><th>Scénario</th><th>Hypothèse</th><th>Inconnues à lever</th><th>Méthode</th></tr></thead><tbody>
+<tr><td>IA offensive</td><td>Les agents IA augmentent l'automatisation des attaques.</td><td>Niveau réel d'autonomie, taux d'adoption, nouvelles TTP.</td><td>Suivi NIST/MITRE/éditeurs, publications et incidents.</td></tr>
+<tr><td>IA défensive</td><td>Les outils SOC automatisent davantage la qualification et la réponse.</td><td>Fiabilité, faux positifs, gouvernance, coûts.</td><td>Benchmarks, retours d'expérience, tests contrôlés.</td></tr>
+<tr><td>Régulation IA</td><td>Les exigences de conformité influencent l'architecture sécurité.</td><td>Calendrier et obligations techniques.</td><td>Veille réglementaire UE/NIST/ANSSI/ENISA.</td></tr>
+</tbody></table></div></div></section>
+
+<section id="sources"><div class="card"><h2>Qualité et diversité des sources</h2><p class="small">Le score de qualité suit le principe du cours : 30 % expertise auteur + 40 % réputation institution + 30 % rigueur éditoriale.</p><div style="overflow:auto"><table><thead><tr><th>Source</th><th>Langue</th><th>Région</th><th>Qualité</th><th>Source primaire</th></tr></thead><tbody id="sourceRows"></tbody></table></div></div></section>
+
+<section id="alerts"><div class="grid"><div class="card s6"><h2>Notifications</h2><p><b>P1 / P2 :</b> email automatique dès la prochaine collecte.</p><p><b>H2 :</b> synthèse hebdomadaire.</p><p><b>H3 :</b> synthèse mensuelle.</p><p class="small">L'adresse email et le mot de passe SMTP sont conservés dans les GitHub Secrets et ne sont jamais affichés sur le site.</p></div>
+<div class="card s6"><h2>Plan d'amélioration continue</h2><p>Quand un KPI passe en ALERTE, le tableau KPI affiche le plan d'action SLA : adaptation des sources, mots-clés, synonymes FR/EN, fréquence, règles de collecte et objectifs.</p></div></div></section>
+</main>
+<script>
+let D={items:[],metrics:{},kpis:{},config:{}};
+const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+const dt=s=>{try{return new Date(s).toLocaleString('fr-FR')}catch{return s}};
+function show(id){document.querySelectorAll('section').forEach(s=>s.classList.remove('active'));document.getElementById(id).classList.add('active');}
+function pill(v){return `<span class="pill ${esc(v)}">${esc(v)}</span>`}
+function eventRow(x){return `<tr><td>${dt(x.published)}</td><td>${dt(x.detected)}</td><td>${pill(x.priority)}</td><td>${pill(x.horizon)}</td><td>${esc(x.category)}</td><td>${esc(x.source_quality)}/100</td><td>${x.cross_check_count||1}</td><td>${esc(x.title)}</td><td><a target="_blank" rel="noopener" href="${esc(x.url)}">${esc(x.source)}</a></td></tr>`}
+async function load(){
+ try{D=await fetch('data.json?'+Date.now()).then(r=>r.json());draw()}catch(e){document.body.insertAdjacentHTML('beforeend',`<div class="err">${esc(e)}</div>`)}
+}
+function draw(){
+ let all=D.items||[];nTotal.textContent=all.length;nP1.textContent=all.filter(x=>x.priority==='P1').length;nSources.textContent=new Set(all.map(x=>x.source)).size;last.textContent=D.generated_at?dt(D.generated_at):'—';
+ latestRows.innerHTML=all.slice(0,12).map(eventRow).join('');
+ let cats={};all.forEach(x=>cats[x.category]=(cats[x.category]||0)+1);catSummary.innerHTML=Object.entries(cats).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<span class="pill">${esc(k)} : ${v}</span>`).join('');
+ let catSel=document.getElementById('fc'); if(catSel.options.length===1) Object.keys(cats).sort().forEach(c=>catSel.add(new Option(c,c)));
+ renderFeed();renderHorizons();renderKpis();renderSignals();renderSources();
+}
+function renderFeed(){
+ let q=(document.getElementById('q')?.value||'').toLowerCase(),h=document.getElementById('fh')?.value||'',p=document.getElementById('fp')?.value||'',c=document.getElementById('fc')?.value||'';
+ let arr=(D.items||[]).filter(x=>(!q||JSON.stringify(x).toLowerCase().includes(q))&&(!h||x.horizon===h)&&(!p||x.priority===p)&&(!c||x.category===c));
+ feedRows.innerHTML=arr.slice(0,800).map(eventRow).join('');
+}
+function renderHorizons(){
+ horizonCards.innerHTML=['H1','H2','H3'].map(h=>{let c=D.config?.horizons?.[h]||{},m=D.metrics?.[h]||{};return `<div class="card s4"><div class="lab">${h}</div><h2>${esc(c.name)}</h2><p>${esc(c.purpose)}</p><p><b>Fréquence :</b> ${esc(c.frequency)}</p><hr style="border-color:#29405e"><p><b>Événements :</b> ${m.count??0}</p><p><b>Pertinence :</b> ${m.relevance_rate??'—'} %</p><p><b>Qualité source :</b> ${m.source_quality_score??'—'} /100</p><p><b>Signaux faibles :</b> ${m.weak_signals_month??0}</p></div>`}).join('');
+}
+function renderKpis(){
+ kpiSections.innerHTML=['H1','H2','H3'].map(h=>`<div class="card s12"><h2>${h} — ${esc(D.config?.horizons?.[h]?.name||'')}</h2>${(D.kpis?.[h]||[]).map(k=>`<div class="kpirow"><div><b>${esc(k.name)}</b><div class="small">${esc(k.action)}</div></div><div>Valeur : <b>${k.value??'—'}</b></div><div>Objectif : <b>${esc(k.target)}</b></div><div class="${k.status}"><b>${k.status}</b></div></div>`).join('')}</div>`).join('');
+}
+function renderSignals(){
+ let list=h=>(D.items||[]).filter(x=>x.horizon===h&&x.weak_signal).slice(0,20).map(x=>`<p><b>${esc(x.title)}</b><br><span class="small">${esc(x.source)} — ${dt(x.published)}</span></p>`).join('')||'<p class="small">Aucun signal faible détecté pour le moment.</p>';
+ weakH2.innerHTML=list('H2');weakH3.innerHTML=list('H3');
+}
+function renderSources(){
+ let map={};(D.items||[]).forEach(x=>{if(!map[x.source])map[x.source]=x});sourceRows.innerHTML=Object.values(map).sort((a,b)=>b.source_quality-a.source_quality).map(x=>`<tr><td>${esc(x.source)}</td><td>${esc(x.language)}</td><td>${esc(x.region)}</td><td>${x.source_quality}/100</td><td>${x.primary_source?'Oui':'Non'}</td></tr>`).join('');
+}
+load();setInterval(load,5*60*1000);
+</script></body></html>

@@ -1,0 +1,42 @@
+name: CyberWatch - collecte mondiale et alertes
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: cyberwatch
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Collecte + KPI + email P1/P2
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: python scripts/collector.py
+      - name: Commit données
+        run: |
+          git config user.name "cyberwatch-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add docs/data.json docs/state.json docs/kpi_history.json
+          git diff --cached --quiet || git commit -m "CyberWatch automatic update"
+          git pull --rebase
+          git push

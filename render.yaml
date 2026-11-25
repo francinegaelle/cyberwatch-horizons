@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: cyberwatch-horizons
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --workers 2 --threads 4 --timeout 120
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: RAW_DATA_URL
+        value: https://raw.githubusercontent.com/francinegaelle/cyberwatch-horizons/main/docs/data.json
