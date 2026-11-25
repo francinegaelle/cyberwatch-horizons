@@ -82,9 +82,53 @@ section{display:none}section.active{display:block}table{width:100%;border-collap
 <section id="sources"><div class="card"><h2>Sources actives observées</h2><div style="overflow:auto"><table><thead><tr><th>Source</th><th>Nombre d'éléments</th></tr></thead><tbody id="sourceRows"></tbody></table></div></div></section>
 
 <section id="alerts"><div class="grid">
-<div class="card s6"><h2>Notifications automatiques</h2><div id="notifStatus" class="status">Vérification…</div>
-<p><b>P1/P2 :</b> email immédiat via le workflow GitHub Actions.</p><p><b>H2 :</b> synthèse hebdomadaire.</p><p><b>H3 :</b> synthèse mensuelle.</p></div>
-<div class="card s6"><h2>Architecture</h2><p><b>Render :</b> application dynamique et API.</p><p><b>GitHub Actions :</b> collecte planifiée, historique et emails.</p><p><b>GitHub :</b> dépôt et base JSON historisée.</p></div>
+<div class="card s12">
+<h2>Centre de notifications</h2>
+<p class="small">Configure ici la manière dont CyberWatch doit t'avertir. Les secrets techniques de l'API email restent protégés côté serveur.</p>
+<div id="notifInfraStatus" class="status">Chargement de la configuration…</div>
+</div>
+
+<div class="card s6">
+<h3>Destinataire & canal</h3>
+<label class="small">Adresse email destinataire</label>
+<input id="alertEmail" type="email" placeholder="exemple@gmail.com" style="width:100%;margin:6px 0 12px">
+<label><input id="emailEnabled" type="checkbox" style="min-width:auto"> Activer les alertes par email</label><br><br>
+<label><input id="browserEnabled" type="checkbox" style="min-width:auto"> Notification navigateur lorsque le site est ouvert</label>
+<hr style="border-color:#29405e;margin:16px 0">
+<label class="small">Code administrateur (si activé)</label>
+<input id="adminPin" type="password" placeholder="Code admin" style="width:100%;margin-top:6px">
+<div class="controls">
+<button class="primary" onclick="saveNotificationSettings()">Enregistrer les préférences</button>
+<button onclick="sendTestEmail()">Envoyer un email test</button>
+</div>
+<div id="notifActionStatus" class="status">Aucune action en cours.</div>
+</div>
+
+<div class="card s6">
+<h3>Règles d'alerte</h3>
+<label><input id="p1Immediate" type="checkbox" style="min-width:auto"> P1 — email immédiat</label><br><br>
+<label><input id="p2Immediate" type="checkbox" style="min-width:auto"> P2 — email immédiat</label><br><br>
+<label><input id="h2Weekly" type="checkbox" style="min-width:auto"> H2 — synthèse hebdomadaire IAM / Zero Trust</label><br><br>
+<label><input id="h3Monthly" type="checkbox" style="min-width:auto"> H3 — synthèse mensuelle IA / cybersécurité</label>
+<hr style="border-color:#29405e;margin:16px 0">
+<p class="small"><b>Contrôle automatique :</b> le moteur planifié interroge les sources régulièrement et n'envoie qu'une fois chaque alerte déjà traitée.</p>
+<button onclick="requestBrowserNotifications()">Autoriser les notifications navigateur</button>
+</div>
+
+<div class="card s12">
+<div class="titleline"><h3>Historique des emails automatiques</h3><button onclick="loadNotificationHistory()">Actualiser</button></div>
+<div style="overflow:auto"><table>
+<thead><tr><th>Date</th><th>Priorité</th><th>Horizon</th><th>Événement</th><th>Destinataire</th></tr></thead>
+<tbody id="notificationHistoryRows"></tbody>
+</table></div>
+</div>
+
+<div class="card s12">
+<h3>Architecture des notifications</h3>
+<p><b>CyberWatch / Render :</b> enregistre les préférences, détecte les nouveaux événements et envoie les emails via une API HTTPS.</p>
+<p><b>Base de données :</b> conserve les préférences et l'historique afin d'éviter les doublons.</p>
+<p><b>GitHub Actions :</b> peut réveiller automatiquement CyberWatch à intervalle régulier pour déclencher le contrôle, même si personne n'a ouvert le site.</p>
+</div>
 </div></section>
 </main>
 
@@ -101,7 +145,7 @@ async function boot(){
    let health=await getJSON('/api/health');backend.textContent=health.status==='ok'?'Actif':'Erreur';
  }catch(e){backend.textContent='Erreur';backend.className='big bad'}
  await loadSummary();await loadEvents();
- try{let n=await getJSON('/api/notification-status');notifStatus.innerHTML=n.email_configured_on_render?'<span class="good">SMTP Render configuré.</span>':'<span class="warn">SMTP Render non configuré. Les emails restent gérés par GitHub Actions si ses secrets sont définis.</span>'}catch(e){}
+ try{await loadNotificationSettings();await loadNotificationHistory()}catch(e){}
 }
 async function loadSummary(){
  S=await getJSON('/api/summary');
@@ -138,6 +182,61 @@ function renderHorizons(){
 function renderKpis(){kpiSections.innerHTML=['H1','H2','H3'].map(h=>`<div class="card s12"><h2>${h} — ${esc(S.config?.horizons?.[h]?.name||'')}</h2>${(S.kpis?.[h]||[]).map(k=>`<div class="kpirow"><div><b>${esc(k.name)}</b><div class="small">${esc(k.action)}</div></div><div>Valeur : <b>${k.value??'—'}</b></div><div>Objectif : <b>${esc(k.target)}</b></div><div class="${k.status}"><b>${k.status}</b></div></div>`).join('')}</div>`).join('')}
 function renderSignals(){let list=h=>lastItems.filter(x=>x.horizon===h&&x.weak_signal).slice(0,20).map(x=>`<p><b>${esc(x.title)}</b><br><span class="small">${esc(x.source)} — ${dt(x.published)}</span></p>`).join('')||'<p class="small">Aucun signal faible dans les résultats actuels.</p>';weakH2.innerHTML=list('H2');weakH3.innerHTML=list('H3')}
 q.addEventListener('keydown',e=>{if(e.key==='Enter')serverSearch(false)});
+
+async function loadNotificationSettings(){
+  let d=await getJSON('/api/notification-settings');
+  let s=d.settings||{};
+  emailEnabled.checked=!!s.email_enabled;
+  p1Immediate.checked=!!s.p1_immediate;
+  p2Immediate.checked=!!s.p2_immediate;
+  h2Weekly.checked=!!s.h2_weekly;
+  h3Monthly.checked=!!s.h3_monthly;
+  browserEnabled.checked=!!s.browser_enabled;
+  alertEmail.placeholder=s.recipient_email_masked||'exemple@gmail.com';
+  let parts=[];
+  parts.push(d.email_provider_ready?'<span class="good">API email connectée</span>':'<span class="warn">API email non configurée</span>');
+  parts.push(d.database_persistent?'<span class="good">préférences persistantes</span>':'<span class="warn">base persistante non configurée</span>');
+  if(d.admin_pin_enabled) parts.push('protection administrateur active');
+  notifInfraStatus.innerHTML=parts.join(' · ');
+}
+async function saveNotificationSettings(){
+  notifActionStatus.textContent='Enregistrement…';
+  let payload={
+    recipient_email:alertEmail.value.trim(),
+    email_enabled:emailEnabled.checked,
+    p1_immediate:p1Immediate.checked,
+    p2_immediate:p2Immediate.checked,
+    h2_weekly:h2Weekly.checked,
+    h3_monthly:h3Monthly.checked,
+    browser_enabled:browserEnabled.checked,
+    admin_pin:adminPin.value
+  };
+  try{
+    let d=await getJSON('/api/notification-settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    notifActionStatus.innerHTML=`<span class="good">Préférences enregistrées.</span> ${d.persistent?'Sauvegarde persistante active.':'Attention : sauvegarde temporaire seulement.'}`;
+    alertEmail.value='';
+    await loadNotificationSettings();
+  }catch(e){notifActionStatus.innerHTML=`<span class="bad">${esc(e.message)}</span>`}
+}
+async function sendTestEmail(){
+  notifActionStatus.textContent='Envoi du mail de test…';
+  try{
+    let d=await getJSON('/api/test-email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({recipient_email:alertEmail.value.trim(),admin_pin:adminPin.value})});
+    notifActionStatus.innerHTML=`<span class="good">${esc(d.message)}</span>`;
+  }catch(e){notifActionStatus.innerHTML=`<span class="bad">${esc(e.message)}</span>`}
+}
+async function loadNotificationHistory(){
+  try{
+    let d=await getJSON('/api/notification-history');
+    notificationHistoryRows.innerHTML=(d.items||[]).map(x=>`<tr><td>${dt(x.sent_at)}</td><td>${pill(x.priority)}</td><td>${pill(x.horizon)}</td><td>${esc(x.title)}</td><td>${esc(x.recipient_email)}</td></tr>`).join('')||'<tr><td colspan="5" class="small">Aucun email automatique envoyé pour le moment.</td></tr>';
+  }catch(e){}
+}
+async function requestBrowserNotifications(){
+  if(!('Notification' in window)){notifActionStatus.innerHTML='<span class="warn">Ce navigateur ne prend pas en charge les notifications.</span>';return}
+  let p=await Notification.requestPermission();
+  notifActionStatus.innerHTML=p==='granted'?'<span class="good">Notifications navigateur autorisées.</span>':'<span class="warn">Notifications navigateur non autorisées.</span>';
+}
+
 boot();
 </script>
 </body></html>

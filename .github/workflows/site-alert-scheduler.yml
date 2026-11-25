@@ -1,0 +1,15 @@
+name: CyberWatch - déclencher les alertes du site
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "5,20,35,50 * * * *"
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Réveiller CyberWatch et lancer le contrôle automatique
+        run: |
+          curl --fail --show-error --retry 2 --max-time 180 \
+            -X POST "https://cyberwatch-horizons.onrender.com/api/scheduled-check"

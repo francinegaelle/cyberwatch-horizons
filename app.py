@@ -2,13 +2,20 @@
 import os
 import json
 import threading
-from datetime import datetime, timezone
+import hashlib
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import requests
 from flask import Flask, jsonify, render_template, request
 
 from scripts import collector
+
+try:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+except Exception:
+    psycopg2 = None
 
 BASE = Path(__file__).resolve().parent
 LOCAL_DATA = BASE / "docs" / "data.json"
@@ -146,6 +153,406 @@ def _refresh_live_sources():
     }
 
 
+
+# -----------------------------
+# Notification Center
+# -----------------------------
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
+ALERT_FROM_EMAIL = os.getenv("ALERT_FROM_EMAIL", "CyberWatch <onboarding@resend.dev>")
+ADMIN_PIN = os.getenv("ADMIN_PIN", "")
+SCHEDULER_MINUTES = int(os.getenv("SCHEDULER_MINUTES", "15"))
+
+_fallback_settings = {
+    "recipient_email": "",
+    "email_enabled": True,
+    "p1_immediate": True,
+    "p2_immediate": True,
+    "h2_weekly": True,
+    "h3_monthly": True,
+    "browser_enabled": False,
+}
+
+
+def _db_conn():
+    if not DATABASE_URL or psycopg2 is None:
+        return None
+    return psycopg2.connect(DATABASE_URL, sslmode="require")
+
+
+def _init_notification_db():
+    conn = _db_conn()
+    if conn is None:
+        return False
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS cyberwatch_notification_settings (
+                        id INTEGER PRIMARY KEY,
+                        recipient_email TEXT NOT NULL DEFAULT '',
+                        email_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                        p1_immediate BOOLEAN NOT NULL DEFAULT TRUE,
+                        p2_immediate BOOLEAN NOT NULL DEFAULT TRUE,
+                        h2_weekly BOOLEAN NOT NULL DEFAULT TRUE,
+                        h3_monthly BOOLEAN NOT NULL DEFAULT TRUE,
+                        browser_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                """)
+                cur.execute("""
+                    INSERT INTO cyberwatch_notification_settings
+                    (id, recipient_email, email_enabled, p1_immediate, p2_immediate, h2_weekly, h3_monthly, browser_enabled)
+                    VALUES (1, '', TRUE, TRUE, TRUE, TRUE, TRUE, FALSE)
+                    ON CONFLICT (id) DO NOTHING
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS cyberwatch_sent_alerts (
+                        event_id TEXT PRIMARY KEY,
+                        priority TEXT,
+                        horizon TEXT,
+                        title TEXT,
+                        recipient_email TEXT,
+                        sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS cyberwatch_scheduler_state (
+                        key TEXT PRIMARY KEY,
+                        value TEXT,
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                """)
+        return True
+    finally:
+        conn.close()
+
+
+def _get_notification_settings():
+    global _fallback_settings
+    conn = _db_conn()
+    if conn is None:
+        return dict(_fallback_settings)
+    _init_notification_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT * FROM cyberwatch_notification_settings WHERE id=1")
+            row = cur.fetchone()
+            return dict(row) if row else dict(_fallback_settings)
+    finally:
+        conn.close()
+
+
+def _save_notification_settings(payload):
+    global _fallback_settings
+    allowed = {
+        "recipient_email": str(payload.get("recipient_email", "")).strip(),
+        "email_enabled": bool(payload.get("email_enabled", True)),
+        "p1_immediate": bool(payload.get("p1_immediate", True)),
+        "p2_immediate": bool(payload.get("p2_immediate", True)),
+        "h2_weekly": bool(payload.get("h2_weekly", True)),
+        "h3_monthly": bool(payload.get("h3_monthly", True)),
+        "browser_enabled": bool(payload.get("browser_enabled", False)),
+    }
+    if allowed["recipient_email"] and "@" not in allowed["recipient_email"]:
+        raise ValueError("Adresse email invalide.")
+    conn = _db_conn()
+    if conn is None:
+        _fallback_settings = allowed
+        return allowed, False
+    _init_notification_db()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE cyberwatch_notification_settings SET
+                        recipient_email=%s, email_enabled=%s, p1_immediate=%s, p2_immediate=%s,
+                        h2_weekly=%s, h3_monthly=%s, browser_enabled=%s, updated_at=NOW()
+                    WHERE id=1
+                """, (
+                    allowed["recipient_email"], allowed["email_enabled"], allowed["p1_immediate"],
+                    allowed["p2_immediate"], allowed["h2_weekly"], allowed["h3_monthly"],
+                    allowed["browser_enabled"]
+                ))
+        return allowed, True
+    finally:
+        conn.close()
+
+
+def _pin_ok(payload):
+    # When ADMIN_PIN is not set, configuration is allowed for easier classroom setup.
+    # Setting ADMIN_PIN on Render is strongly recommended before sharing the public URL.
+    if not ADMIN_PIN:
+        return True
+    return str(payload.get("admin_pin", "")) == ADMIN_PIN
+
+
+def _mask_email(email):
+    if not email or "@" not in email:
+        return ""
+    left, right = email.split("@", 1)
+    if len(left) <= 2:
+        left_mask = left[:1] + "*"
+    else:
+        left_mask = left[:1] + "*" * max(2, len(left)-2) + left[-1:]
+    return left_mask + "@" + right
+
+
+def _resend_email(to_email, subject, text_body):
+    if not RESEND_API_KEY:
+        raise RuntimeError("RESEND_API_KEY n'est pas configurée sur Render.")
+    if not to_email:
+        raise RuntimeError("Aucune adresse destinataire n'est configurée.")
+    r = requests.post(
+        "https://api.resend.com/emails",
+        headers={
+            "Authorization": f"Bearer {RESEND_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "from": ALERT_FROM_EMAIL,
+            "to": [to_email],
+            "subject": subject,
+            "text": text_body,
+        },
+        timeout=25,
+    )
+    if r.status_code >= 300:
+        raise RuntimeError(f"Resend HTTP {r.status_code}: {r.text[:500]}")
+    return r.json()
+
+
+def _sent_before(event_id):
+    conn = _db_conn()
+    if conn is None:
+        return False
+    _init_notification_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM cyberwatch_sent_alerts WHERE event_id=%s", (event_id,))
+            return cur.fetchone() is not None
+    finally:
+        conn.close()
+
+
+def _mark_sent(event, recipient):
+    conn = _db_conn()
+    if conn is None:
+        return
+    _init_notification_db()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO cyberwatch_sent_alerts(event_id, priority, horizon, title, recipient_email)
+                    VALUES (%s,%s,%s,%s,%s)
+                    ON CONFLICT (event_id) DO NOTHING
+                """, (
+                    event.get("id"), event.get("priority"), event.get("horizon"),
+                    event.get("title","")[:1000], recipient
+                ))
+    finally:
+        conn.close()
+
+
+def _state_get(key):
+    conn = _db_conn()
+    if conn is None:
+        return None
+    _init_notification_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT value FROM cyberwatch_scheduler_state WHERE key=%s", (key,))
+            row = cur.fetchone()
+            return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def _state_set(key, value):
+    conn = _db_conn()
+    if conn is None:
+        return
+    _init_notification_db()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO cyberwatch_scheduler_state(key,value,updated_at)
+                    VALUES (%s,%s,NOW())
+                    ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()
+                """, (key, str(value)))
+    finally:
+        conn.close()
+
+
+def _send_event_alert(event, recipient):
+    subject = f'[CyberWatch {event.get("priority","")}] {event.get("category","Alerte IT")}'
+    body = "\n".join([
+        "CyberWatch Horizons a détecté un nouvel événement.",
+        "",
+        f'Priorité : {event.get("priority","")}',
+        f'Horizon : {event.get("horizon","")}',
+        f'Catégorie : {event.get("category","")}',
+        f'Événement : {event.get("title","")}',
+        f'Source : {event.get("source","")}',
+        f'Publié : {event.get("published","")}',
+        f'Détecté : {event.get("detected","")}',
+        f'Qualité source : {event.get("source_quality","—")}/100',
+        f'Lien : {event.get("url","")}',
+    ])
+    _resend_email(recipient, subject, body)
+    _mark_sent(event, recipient)
+
+
+def _send_digest(horizon, recipient, items):
+    selected = [x for x in items if x.get("horizon") == horizon][:30]
+    if not selected:
+        return False
+    label = "IAM / Zero Trust" if horizon == "H2" else "IA en cybersécurité"
+    lines = [f"CyberWatch — Synthèse {horizon} : {label}", ""]
+    for x in selected:
+        lines.extend([
+            f'- [{x.get("priority","")}] {x.get("title","")}',
+            f'  {x.get("source","")} — {x.get("url","")}',
+        ])
+    _resend_email(recipient, f"[CyberWatch {horizon}] Synthèse {label}", "\n".join(lines))
+    return True
+
+
+def _automatic_check(force=False):
+    settings = _get_notification_settings()
+    if not settings.get("email_enabled") or not settings.get("recipient_email"):
+        return {"ok": True, "sent": 0, "message": "Email désactivé ou destinataire absent."}
+
+    # Public endpoint protection: do not perform a full check more often than configured.
+    last = _state_get("last_auto_check")
+    if not force and last:
+        try:
+            last_dt = datetime.fromisoformat(last)
+            if datetime.now(timezone.utc) - last_dt < timedelta(minutes=max(5, SCHEDULER_MINUTES-2)):
+                return {"ok": True, "sent": 0, "message": "Contrôle déjà exécuté récemment."}
+        except Exception:
+            pass
+
+    refresh_info = _refresh_live_sources()
+    data = _merged_data()
+    items = data.get("items", [])
+    sent = 0
+    errors = []
+
+    for event in items[:500]:
+        priority = event.get("priority")
+        enabled = (priority == "P1" and settings.get("p1_immediate")) or (priority == "P2" and settings.get("p2_immediate"))
+        if not enabled or _sent_before(event.get("id")):
+            continue
+        try:
+            _send_event_alert(event, settings["recipient_email"])
+            sent += 1
+        except Exception as exc:
+            errors.append(str(exc))
+            break
+
+    now_utc = datetime.now(timezone.utc)
+    # Weekly H2: once per ISO week.
+    if settings.get("h2_weekly"):
+        week_key = f"{now_utc.isocalendar().year}-W{now_utc.isocalendar().week}"
+        if _state_get("last_h2_week") != week_key and now_utc.weekday() == 0:
+            try:
+                if _send_digest("H2", settings["recipient_email"], items):
+                    _state_set("last_h2_week", week_key)
+            except Exception as exc:
+                errors.append(str(exc))
+    # Monthly H3: once per month.
+    if settings.get("h3_monthly"):
+        month_key = now_utc.strftime("%Y-%m")
+        if _state_get("last_h3_month") != month_key and now_utc.day == 1:
+            try:
+                if _send_digest("H3", settings["recipient_email"], items):
+                    _state_set("last_h3_month", month_key)
+            except Exception as exc:
+                errors.append(str(exc))
+
+    _state_set("last_auto_check", now_utc.isoformat())
+    return {"ok": not errors, "sent": sent, "errors": errors, "refresh": refresh_info}
+
+
+@app.route("/api/notification-settings", methods=["GET", "POST"])
+def notification_settings_api():
+    if request.method == "GET":
+        s = _get_notification_settings()
+        public = dict(s)
+        public["recipient_email_masked"] = _mask_email(s.get("recipient_email",""))
+        # Do not expose the complete stored address on a public page.
+        public["recipient_email"] = ""
+        return jsonify({
+            "ok": True,
+            "settings": public,
+            "database_persistent": bool(DATABASE_URL and psycopg2 is not None),
+            "email_provider_ready": bool(RESEND_API_KEY),
+            "admin_pin_enabled": bool(ADMIN_PIN),
+        })
+
+    payload = request.get_json(silent=True) or {}
+    if not _pin_ok(payload):
+        return jsonify({"ok": False, "error": "Code administrateur incorrect."}), 403
+    try:
+        saved, persistent = _save_notification_settings(payload)
+        return jsonify({
+            "ok": True,
+            "persistent": persistent,
+            "recipient_email_masked": _mask_email(saved.get("recipient_email","")),
+        })
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@app.route("/api/test-email", methods=["POST"])
+def test_email_api():
+    payload = request.get_json(silent=True) or {}
+    if not _pin_ok(payload):
+        return jsonify({"ok": False, "error": "Code administrateur incorrect."}), 403
+    settings = _get_notification_settings()
+    email = str(payload.get("recipient_email") or settings.get("recipient_email") or "").strip()
+    try:
+        result = _resend_email(
+            email,
+            "[CyberWatch] Email de test",
+            "CyberWatch Horizons fonctionne. Les notifications email sont correctement configurées."
+        )
+        return jsonify({"ok": True, "message": f"Email de test envoyé à {_mask_email(email)}.", "provider_id": result.get("id")})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/scheduled-check", methods=["GET", "POST"])
+def scheduled_check_api():
+    result = _automatic_check(force=False)
+    return jsonify(result)
+
+
+@app.route("/api/notification-history")
+def notification_history_api():
+    conn = _db_conn()
+    if conn is None:
+        return jsonify({"ok": True, "items": [], "persistent": False})
+    _init_notification_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT priority,horizon,title,recipient_email,sent_at
+                FROM cyberwatch_sent_alerts
+                ORDER BY sent_at DESC LIMIT 25
+            """)
+            rows = [dict(r) for r in cur.fetchall()]
+            for r in rows:
+                r["recipient_email"] = _mask_email(r.get("recipient_email",""))
+            return jsonify({"ok": True, "items": rows, "persistent": True})
+    finally:
+        conn.close()
+
+
+
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -236,15 +643,18 @@ def live_search():
 
 @app.route("/api/notification-status")
 def notification_status():
-    # Never reveal secret values; only whether the server was configured.
-    required = ["SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD", "ALERT_EMAIL"]
-    configured = all(bool(os.getenv(k)) for k in required)
+    settings = _get_notification_settings()
     return jsonify({
-        "email_configured_on_render": configured,
-        "github_actions_email": "Les alertes automatiques sont prévues dans le workflow GitHub Actions.",
-        "immediate_priorities": CONFIG.get("notifications", {}).get("email", {}).get("immediate_priorities", ["P1", "P2"]),
+        "email_provider": "Resend HTTP API",
+        "email_provider_ready": bool(RESEND_API_KEY),
+        "database_persistent": bool(DATABASE_URL and psycopg2 is not None),
+        "recipient_email_masked": _mask_email(settings.get("recipient_email","")),
+        "email_enabled": bool(settings.get("email_enabled")),
+        "p1_immediate": bool(settings.get("p1_immediate")),
+        "p2_immediate": bool(settings.get("p2_immediate")),
+        "h2_weekly": bool(settings.get("h2_weekly")),
+        "h3_monthly": bool(settings.get("h3_monthly")),
     })
-
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "10000"))
