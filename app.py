@@ -10,6 +10,7 @@ import requests
 from flask import Flask, jsonify, render_template, request
 
 from scripts import collector
+import gist_store
 
 try:
     import psycopg2
@@ -477,6 +478,66 @@ def _automatic_check(force=False):
     return {"ok": not errors, "sent": sent, "errors": errors, "refresh": refresh_info}
 
 
+
+# Persistent notification storage override: GitHub secret Gist.
+def _get_notification_settings():
+    state, _ = gist_store.get_state()
+    return dict(state.get("settings") or {})
+
+
+def _save_notification_settings(payload):
+    allowed = {
+        "recipient_email": str(payload.get("recipient_email", "")).strip(),
+        "email_enabled": bool(payload.get("email_enabled", True)),
+        "p1_immediate": bool(payload.get("p1_immediate", True)),
+        "p2_immediate": bool(payload.get("p2_immediate", True)),
+        "h2_weekly": bool(payload.get("h2_weekly", True)),
+        "h3_monthly": bool(payload.get("h3_monthly", True)),
+        "browser_enabled": bool(payload.get("browser_enabled", False)),
+    }
+    if allowed["recipient_email"] and "@" not in allowed["recipient_email"]:
+        raise ValueError("Adresse email invalide.")
+    def change(state):
+        state["settings"] = dict(allowed)
+        return dict(allowed)
+    return gist_store.mutate(change)
+
+
+def _sent_before(event_id):
+    state, _ = gist_store.get_state()
+    return any(x.get("event_id") == event_id for x in state.get("sent_alerts", []))
+
+
+def _mark_sent(event, recipient):
+    def change(state):
+        rows = list(state.get("sent_alerts") or [])
+        if not any(x.get("event_id") == event.get("id") for x in rows):
+            rows.append({
+                "event_id": event.get("id"),
+                "priority": event.get("priority"),
+                "horizon": event.get("horizon"),
+                "title": event.get("title", "")[:1000],
+                "recipient_email": recipient,
+                "sent_at": datetime.now(timezone.utc).isoformat(),
+            })
+        state["sent_alerts"] = rows[-1000:]
+        return True
+    gist_store.mutate(change)
+
+
+def _state_get(key):
+    state, _ = gist_store.get_state()
+    return (state.get("scheduler_state") or {}).get(key)
+
+
+def _state_set(key, value):
+    def change(state):
+        d = dict(state.get("scheduler_state") or {})
+        d[key] = str(value)
+        state["scheduler_state"] = d
+        return True
+    gist_store.mutate(change)
+
 @app.route("/api/notification-settings", methods=["GET", "POST"])
 def notification_settings_api():
     if request.method == "GET":
@@ -488,7 +549,8 @@ def notification_settings_api():
         return jsonify({
             "ok": True,
             "settings": public,
-            "database_persistent": bool(DATABASE_URL and psycopg2 is not None),
+            "storage_persistent": gist_store.configured(),
+            "storage_backend": "GitHub Gist secret" if gist_store.configured() else "mémoire temporaire",
             "email_provider_ready": bool(RESEND_API_KEY),
             "admin_pin_enabled": bool(ADMIN_PIN),
         })
@@ -533,24 +595,12 @@ def scheduled_check_api():
 
 @app.route("/api/notification-history")
 def notification_history_api():
-    conn = _db_conn()
-    if conn is None:
-        return jsonify({"ok": True, "items": [], "persistent": False})
-    _init_notification_db()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("""
-                SELECT priority,horizon,title,recipient_email,sent_at
-                FROM cyberwatch_sent_alerts
-                ORDER BY sent_at DESC LIMIT 25
-            """)
-            rows = [dict(r) for r in cur.fetchall()]
-            for r in rows:
-                r["recipient_email"] = _mask_email(r.get("recipient_email",""))
-            return jsonify({"ok": True, "items": rows, "persistent": True})
-    finally:
-        conn.close()
-
+    state, persistent = gist_store.get_state()
+    rows = list(state.get("sent_alerts") or [])[-25:]
+    rows.reverse()
+    for row in rows:
+        row["recipient_email"] = _mask_email(row.get("recipient_email", ""))
+    return jsonify({"ok": True, "items": rows, "persistent": persistent})
 
 
 @app.route("/")
@@ -647,7 +697,8 @@ def notification_status():
     return jsonify({
         "email_provider": "Resend HTTP API",
         "email_provider_ready": bool(RESEND_API_KEY),
-        "database_persistent": bool(DATABASE_URL and psycopg2 is not None),
+        "storage_persistent": gist_store.configured(),
+            "storage_backend": "GitHub Gist secret" if gist_store.configured() else "mémoire temporaire",
         "recipient_email_masked": _mask_email(settings.get("recipient_email","")),
         "email_enabled": bool(settings.get("email_enabled")),
         "p1_immediate": bool(settings.get("p1_immediate")),

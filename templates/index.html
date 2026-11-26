@@ -126,7 +126,7 @@ section{display:none}section.active{display:block}table{width:100%;border-collap
 <div class="card s12">
 <h3>Architecture des notifications</h3>
 <p><b>CyberWatch / Render :</b> enregistre les préférences, détecte les nouveaux événements et envoie les emails via une API HTTPS.</p>
-<p><b>Base de données :</b> conserve les préférences et l'historique afin d'éviter les doublons.</p>
+<p><b>Stockage GitHub Gist :</b> conserve durablement les préférences et l'historique afin d'éviter les doublons.</p>
 <p><b>GitHub Actions :</b> peut réveiller automatiquement CyberWatch à intervalle régulier pour déclencher le contrôle, même si personne n'a ouvert le site.</p>
 </div>
 </div></section>
@@ -195,7 +195,7 @@ async function loadNotificationSettings(){
   alertEmail.placeholder=s.recipient_email_masked||'exemple@gmail.com';
   let parts=[];
   parts.push(d.email_provider_ready?'<span class="good">API email connectée</span>':'<span class="warn">API email non configurée</span>');
-  parts.push(d.database_persistent?'<span class="good">préférences persistantes</span>':'<span class="warn">base persistante non configurée</span>');
+  parts.push(d.storage_persistent?'<span class="good">stockage GitHub persistant</span>':'<span class="warn">stockage persistant non configuré</span>');
   if(d.admin_pin_enabled) parts.push('protection administrateur active');
   notifInfraStatus.innerHTML=parts.join(' · ');
 }
